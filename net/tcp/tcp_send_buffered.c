@@ -205,7 +205,8 @@ static void psock_writebuffer_notify(FAR struct tcp_conn_s *conn)
  ****************************************************************************/
 
 static inline void psock_lost_connection(FAR struct socket *psock,
-                                         FAR struct tcp_conn_s *conn)
+                                         FAR struct tcp_conn_s *conn,
+                                         bool abort)
 {
   FAR sq_entry_t *entry;
   FAR sq_entry_t *next;
@@ -245,6 +246,14 @@ static inline void psock_lost_connection(FAR struct socket *psock,
 
       conn->sent       = 0;
       conn->sndseq_max = 0;
+
+      /* Force abort the connection. */
+
+      if (abort)
+        {
+          conn->tx_unacked = 0;
+          conn->tcpstateflags = TCP_CLOSED;
+        }
     }
 }
 
@@ -317,6 +326,30 @@ static uint16_t psock_send_eventhandler(FAR struct net_driver_s *dev,
 {
   FAR struct tcp_conn_s *conn = (FAR struct tcp_conn_s *)pvconn;
   FAR struct socket *psock = (FAR struct socket *)pvpriv;
+
+  /* Check for a loss of connection */
+
+  if ((flags & TCP_DISCONN_EVENTS) != 0)
+    {
+      ninfo("Lost connection: %04x\n", flags);
+
+      /* We could get here recursively through the callback actions of
+       * tcp_lost_connection().  So don't repeat that action if we have
+       * already been disconnected.
+       */
+
+      if (psock->s_conn != NULL && _SS_ISCONNECTED(psock->s_flags))
+        {
+          /* Report not connected */
+
+          tcp_lost_connection(psock, psock->s_sndcb, flags);
+        }
+
+      /* Free write buffers and terminate polling */
+
+      psock_lost_connection(psock, psock->s_conn, !!(flags & NETDEV_DOWN));
+      return flags;
+    }
 
   /* The TCP socket is connected and, hence, should be bound to a device.
    * Make sure that the polling device is the one that we are bound to.
@@ -407,7 +440,9 @@ static uint16_t psock_send_eventhandler(FAR struct net_driver_s *dev,
 
                   sq_rem(entry, &conn->unacked_q);
 
-                  /* And return the write buffer to the pool of free buffers */
+                  /* And return the write buffer to the pool of free
+                   * buffers
+                   */
 
                   tcp_wrbuffer_release(wrb);
 
@@ -483,30 +518,6 @@ static uint16_t psock_send_eventhandler(FAR struct net_driver_s *dev,
         }
     }
 
-  /* Check for a loss of connection */
-
-  else if ((flags & TCP_DISCONN_EVENTS) != 0)
-    {
-      ninfo("Lost connection: %04x\n", flags);
-
-      /* We could get here recursively through the callback actions of
-       * tcp_lost_connection().  So don't repeat that action if we have
-       * already been disconnected.
-       */
-
-      if (psock->s_conn != NULL && _SS_ISCONNECTED(psock->s_flags))
-        {
-          /* Report not connected */
-
-          tcp_lost_connection(psock, psock->s_sndcb, flags);
-        }
-
-      /* Free write buffers and terminate polling */
-
-      psock_lost_connection(psock, conn);
-      return flags;
-    }
-
   /* Check if we are being asked to retransmit data */
 
   else if ((flags & TCP_REXMIT) != 0)
@@ -528,7 +539,9 @@ static uint16_t psock_send_eventhandler(FAR struct net_driver_s *dev,
           FAR struct tcp_wrbuffer_s *tmp;
           uint16_t sent;
 
-          /* Yes.. Reset the number of bytes sent sent from the write buffer */
+          /* Yes.. Reset the number of bytes sent sent from
+           * the write buffer
+           */
 
           sent = TCP_WBSENT(wrb);
           if (conn->tx_unacked > sent)
@@ -770,7 +783,9 @@ static uint16_t psock_send_eventhandler(FAR struct net_driver_s *dev,
       conn->tx_unacked += sndlen;
       conn->sent       += sndlen;
 
-      /* Below prediction will become true, unless retransmission occurrence */
+      /* Below prediction will become true,
+       * unless retransmission occurrence
+       */
 
       predicted_seqno = tcp_getsequence(conn->sndseq) + sndlen;
 
@@ -1077,7 +1092,7 @@ ssize_t psock_tcp_send(FAR struct socket *psock, FAR const void *buf,
                 }
               else
                 {
-                  nerr("ERROR: Failed to add data to the I/O buffer chain\n");
+                  nerr("ERROR: Failed to add data to the I/O chain\n");
                   ret = -EWOULDBLOCK;
                   goto errout_with_wrb;
                 }
@@ -1093,8 +1108,8 @@ ssize_t psock_tcp_send(FAR struct socket *psock, FAR const void *buf,
           int blresult;
 
           /* iob_copyin might wait for buffers to be freed, but if network is
-           * locked this might never happen, since network driver is also locked,
-           * therefore we need to break the lock
+           * locked this might never happen, since network driver is also
+           * locked, therefore we need to break the lock
            */
 
           blresult = net_breaklock(&count);
@@ -1199,9 +1214,10 @@ int psock_tcp_cansend(FAR struct socket *psock)
    * buffer head and at least one free IOB to initialize the write buffer
    * head.
    *
-   * REVISIT:  The send will still block if we are unable to buffer the entire
-   * user-provided buffer which may be quite large.  We will almost certainly
-   * need to have more than one free IOB, but we don't know how many more.
+   * REVISIT:  The send will still block if we are unable to buffer
+   * the entire user-provided buffer which may be quite large.
+   * We will almost certainly need to have more than one free IOB,
+   * but we don't know how many more.
    */
 
   if (tcp_wrbuffer_test() < 0 || iob_navail(false) <= 0)

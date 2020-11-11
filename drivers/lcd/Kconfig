@@ -24,6 +24,14 @@ config LCD_PACKEDMSFIRST
 
 comment "Common Graphic LCD Settings"
 
+config LCD_DEV
+  bool "LCD character device"
+  default n
+  ---help---
+    This option enables support for a character driver which exposes
+    LCD operations to userspace via ioctl() commands. This is useful when
+    not using NXGraphics but an alternative graphics library such as LVGL.
+
 config LCD_FRAMEBUFFER
 	bool "LCD framebuffer front end"
 	default n
@@ -355,14 +363,6 @@ config SSD1306_FREQUENCY
 	default 10000000 if LCD_DD12864WO4A
 	---help---
 		Selects the SPI bus frequency used with the SSD1306 device
-
-#config SSD1306_NINTERFACES
-#	int "Number of SSD1306 Devices"
-#	default 1
-#	---help---
-#		Specifies the number of physical SSD1306 devices that will be
-#		supported.  NOTE:  At present, this must be undefined or defined to
-#		be 1.
 
 endif # LCD_SSD1306_SPI
 

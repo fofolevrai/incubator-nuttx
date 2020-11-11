@@ -109,14 +109,6 @@ config NRF52_RTC
 	bool
 	default n
 
-config NRF52_SPI_MASTER_WORKAROUND_1BYTE_TRANSFER
-	bool "SPI Master 1 Byte transfer anomaly workaround"
-	depends on NRF52_SPI_MASTER && ARCH_CHIP_NRF52832
-	default y
-	---help---
-		Enable the workaround to fix SPI Master 1 byte transfer bug
-		which occurs in NRF52832 revision 1 and revision 2.
-
 menu "NRF52 Peripheral Selection"
 
 config NRF52_I2C0_MASTER
@@ -372,6 +364,13 @@ endif
 
 endmenu # System Timer
 
+config NRF52_DCDC
+  bool "Enable DC/DC regulator"
+  default n
+  ---help---
+    This option enables the DC/DC regulator, which reduces
+    current consumption. This requires extra circuitry (inductors).
+
 config NRF52_FLASH_PREFETCH
 	bool "Enable FLASH Pre-fetch"
 	default y
@@ -386,6 +385,24 @@ config NRF52_PROGMEM
 		Enable support FLASH interfaces as defined in include/nuttx/progmem.h
 
 menu "GPIO Interrupt Configuration"
+
+config NRF52_PER_PIN_INTERRUPTS
+	bool "Per-pin interrupt callbacks"
+	default n if DEFAULT_SMALL
+	default y if !DEFAULT_SMALL
+	depends on NRF52_GPIOTE
+	---help---
+		The GPIOTE peripheral supports a limited number of channels which can
+		be set to EVENT mode and thus generate interrupts on pin state changes.
+		Another mechanism offered by the GPIO/GPIOTE peripherals is the PORT
+		event. This event is generated from a signal shared by all pins in
+		the GPIO port.
+
+		This option enables the ability to set per-pin callbacks that will
+		be invoked from the main GPIOTE ISR when a PORT event is generated.
+		As this involves extra storage to store each callback, this option can
+		be disabled to save space. In such case, it is possible to set a callback
+		for the whole PORT event directly.
 
 endmenu # GPIO Interrupt Configuration
 
@@ -598,3 +615,14 @@ config NRF52_SAADC_LIMITS
 endif # NRF52_SAADC
 
 endmenu # SAADC Configuration
+
+menu "SPI Configuration"
+
+config NRF52_SPI_MASTER_WORKAROUND_1BYTE_TRANSFER
+	bool "Master 1 Byte transfer anomaly workaround"
+	depends on NRF52_SPI_MASTER && ARCH_CHIP_NRF52832
+	default y
+	---help---
+		Enable the workaround to fix SPI Master 1 byte transfer bug
+		which occurs in NRF52832 revision 1 and revision 2.
+endmenu

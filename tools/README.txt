@@ -1002,6 +1002,7 @@ testbuild.sh
          Default $WD/../nuttx, where $WD is the parent directory of
          the directory where this script is.
       -p only print the list of configs without running any builds
+      -C Skip tree cleanness check.
       -G Use "git clean -xfdq" instead of "make distclean" to clean the tree.
          This option may speed up the builds. However, note that:
            * This assumes that your trees are git based.
@@ -1040,7 +1041,10 @@ testbuild.sh
   configured board.
 
   The prefix '-' can be used to skip a configuration:
-  -stm32f429i-disco/nsh,CONFIG_ARMV7M_TOOLCHAIN_GNU_EABIL
+  -stm32f429i-disco/nsh
+
+  or skip a configuration on a specific host(e.g. Darwin):
+  -Darwin,sim:rpserver
 
 uncrustify.cfg
 --------------

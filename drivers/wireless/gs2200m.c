@@ -64,6 +64,7 @@
 #include <nuttx/wqueue.h>
 #include <nuttx/semaphore.h>
 #include <nuttx/signal.h>
+#include <nuttx/wireless/wireless.h>
 #include <nuttx/wireless/gs2200m.h>
 #include <nuttx/net/netdev.h>
 
@@ -143,7 +144,8 @@ enum pkt_type_e
   TYPE_FAIL = 7,
   TYPE_TIMEOUT = 8,
   TYPE_SPI_ERROR = 9,
-  TYPE_UNMATCH = 10,
+  TYPE_DISASSOCIATE = 10,
+  TYPE_UNMATCH = 11,
 };
 
 struct evt_code_s
@@ -202,6 +204,8 @@ struct gs2200m_dev_s
   struct net_driver_s  net_dev;
   uint8_t              op_mode;
   FAR const struct gs2200m_lower_s *lower;
+  bool                 disassociate_flag;
+  struct gs2200m_assoc_msg reconnect_msg;
 };
 
 /****************************************************************************
@@ -247,9 +251,10 @@ static const struct file_operations g_gs2200m_fops =
 static struct evt_code_s _evt_table[] =
 {
   {"OK", TYPE_OK},
+  {"Disassociation Event", TYPE_DISASSOCIATE},
   {"ERROR", TYPE_ERROR},
   {"DISCONNECT", TYPE_DISCONNECT},
-  {"CONNECT", TYPE_CONNECT},
+  {"CONNECT ", TYPE_CONNECT},
   {"Serial2WiFi APP", TYPE_BOOT_MSG}
 };
 
@@ -1391,6 +1396,55 @@ static enum pkt_type_e _parse_pkt(FAR uint8_t *p, uint16_t len,
 }
 
 /****************************************************************************
+ * Name: _dup_pkt_dat_and_notify
+ ****************************************************************************/
+
+static void _dup_pkt_dat_and_notify(FAR struct gs2200m_dev_s *dev,
+                                    FAR struct pkt_dat_s *pkt_dat0)
+{
+  struct pkt_dat_s *pkt_dat;
+  uint8_t c;
+
+  /* Only bulk data */
+
+  ASSERT(pkt_dat0->data && (0 == pkt_dat0->n));
+
+  /* Allocate a new pkt_dat */
+
+  pkt_dat = (FAR struct pkt_dat_s *)kmm_malloc(sizeof(struct pkt_dat_s));
+  ASSERT(pkt_dat);
+
+  /* Copy pkt_dat0 to pkt_dat */
+
+  memcpy(pkt_dat, pkt_dat0, sizeof(struct pkt_dat_s));
+
+  /* Allocate bulk data and copy */
+
+  pkt_dat->data = (FAR uint8_t *)kmm_malloc(pkt_dat0->len);
+  ASSERT(pkt_dat->data);
+  memcpy(pkt_dat->data, pkt_dat0->data, pkt_dat0->len);
+
+  /* Convert cid to c */
+
+  c = _cid_to_uint8(pkt_dat->cid);
+
+  /* Add the pkt_dat to the pkt_q */
+
+  dq_addlast((FAR dq_entry_t *)pkt_dat, &dev->pkt_q[c]);
+  dev->pkt_q_cnt[c]++;
+
+  /* NOTE: total_bulk must be updated
+   * Usually, total_bulk is updated in gs2200m_recv_pkt()
+   * However, the pkt_dat was duplicated from pkt_dat0
+   * So it needs to be updated, otherwise it will cause ASSERT
+   */
+
+  dev->total_bulk += pkt_dat->len;
+
+  _notif_q_push(dev, pkt_dat->cid);
+}
+
+/****************************************************************************
  * Name: gs2200m_recv_pkt
  ****************************************************************************/
 
@@ -1424,6 +1478,11 @@ static enum pkt_type_e gs2200m_recv_pkt(FAR struct gs2200m_dev_s *dev,
       _check_pkt_q_cnt(dev, pkt_dat->cid);
     }
 
+  if (t == TYPE_DISASSOCIATE)
+    {
+      dev->disassociate_flag = true;
+    }
+
   if (pkt_dat)
     {
       pkt_dat->type = t;
@@ -1452,6 +1511,7 @@ static enum pkt_type_e gs2200m_send_cmd(FAR struct gs2200m_dev_s *dev,
 {
   enum spi_status_e s;
   enum pkt_type_e r = TYPE_SPI_ERROR;
+  bool bulk = false;
   int n = 1;
 
   /* Disable gs2200m irq to poll dready */
@@ -1470,7 +1530,28 @@ retry:
       goto errout;
     }
 
+retry_recv:
+
   r = gs2200m_recv_pkt(dev, pkt_dat);
+
+  if ((TYPE_BULK_DATA_TCP == r || TYPE_BULK_DATA_UDP == r) && pkt_dat)
+    {
+      wlwarn("*** Found bulk data \n");
+
+      /* Bulk data found in the response,
+       * duplicate the packet and notify
+       */
+
+      _dup_pkt_dat_and_notify(dev, pkt_dat);
+
+      /* release & initialize pkt_dat before retry */
+
+      _release_pkt_dat(dev, pkt_dat);
+      memset(pkt_dat, 0, sizeof(pkt_dat));
+
+      bulk = true;
+      goto retry_recv;
+    }
 
   /* NOTE: retry in case of errors */
 
@@ -1489,6 +1570,11 @@ retry:
     }
 
 errout:
+
+  if (bulk)
+    {
+      wlwarn("*** Normal response r=%d \n", r);
+    }
 
   /* Enable gs2200m irq again */
 
@@ -1827,7 +1913,7 @@ gs2200m_create_clnt(FAR struct gs2200m_dev_s *dev,
       goto errout;
     }
 
-  if (NULL != (p = strstr(pkt_dat.msg[0], "CONNECT")))
+  if (NULL != (p = strstr(pkt_dat.msg[0], "CONNECT ")))
     {
       n = sscanf(p, "CONNECT %c", cid);
       ASSERT(1 == n);
@@ -1870,19 +1956,12 @@ static enum pkt_type_e gs2200m_start_server(FAR struct gs2200m_dev_s *dev,
   memset(&pkt_dat, 0, sizeof(pkt_dat));
   r = gs2200m_send_cmd(dev, cmd, &pkt_dat);
 
-  /* REVISIT:
-   * TYPE_BULK for other sockets might be received here,
-   * if the sockets have heavy bulk traffic.
-   * In this case, the packet should be queued and
-   * wait for a response to the NSTCP command.
-   */
-
   if (r != TYPE_OK || pkt_dat.n == 0)
     {
       goto errout;
     }
 
-  if (NULL != (p = strstr(pkt_dat.msg[0], "CONNECT")))
+  if (NULL != (p = strstr(pkt_dat.msg[0], "CONNECT ")))
     {
       n = sscanf(p, "CONNECT %c", cid);
       ASSERT(1 == n);
@@ -2259,13 +2338,6 @@ static int gs2200m_ioctl_connect(FAR struct gs2200m_dev_s *dev,
         break;
 
       default:
-        /* REVISIT:
-         * TYPE_BULK for other sockets might be received here,
-         * if the sockets have heavy bulk traffic.
-         * In this case, the packet should be queued and
-         * wait for a response to the NCTCP command.
-         */
-
         wlerr("+++ error: type=%d \n", type);
         ASSERT(false);
         ret = -EINVAL;
@@ -2511,6 +2583,10 @@ static int gs2200m_ioctl_assoc_sta(FAR struct gs2200m_dev_s *dev,
 {
   enum pkt_type_e t;
 
+  /* Remember assoc request msg for reconnection */
+
+  memcpy(&dev->reconnect_msg, msg, sizeof(struct gs2200m_assoc_msg));
+
   /* Disassociate */
 
   t = gs2200m_disassociate(dev);
@@ -2562,6 +2638,8 @@ static int gs2200m_ioctl_assoc_sta(FAR struct gs2200m_dev_s *dev,
       wlerr("*** error: failed to join (ssid:%s) \n", msg->ssid);
       return -1;
     }
+
+  dev->disassociate_flag = false;
 
   return OK;
 }
@@ -2650,6 +2728,93 @@ static int gs2200m_ioctl_assoc_ap(FAR struct gs2200m_dev_s *dev,
 }
 
 /****************************************************************************
+ * Name: gs2200m_gs2200m_ioctl_iwreq
+ ****************************************************************************/
+
+static int gs2200m_ioctl_iwreq(FAR struct gs2200m_dev_s *dev,
+                               FAR struct gs2200m_ifreq_msg *msg)
+{
+  struct iwreq *res = (struct iwreq *)&msg->ifr;
+  struct pkt_dat_s pkt_dat;
+  enum pkt_type_e   r;
+  char cmd[64];
+  char cmd2[64];
+  int  n = 0;
+
+  snprintf(cmd, sizeof(cmd), "AT+NSTAT=?\r\n");
+
+  /* Initialize pkt_dat and send */
+
+  memset(&pkt_dat, 0, sizeof(pkt_dat));
+  r = gs2200m_send_cmd(dev, cmd, &pkt_dat);
+
+  if (r != TYPE_OK || pkt_dat.n <= 7)
+    {
+      wlinfo("+++ error: r=%d pkt_dat.msg[0]=%s \n",
+             r, pkt_dat.msg[0]);
+
+      goto errout;
+    }
+
+  /* Find cid in the connection status */
+
+  if (msg->cmd == SIOCGIWNWID)
+    {
+      if (strstr(pkt_dat.msg[2], "BSSID=") == NULL)
+        {
+          wlinfo("+++ error: pkt_dat.msg[2]=%s \n", pkt_dat.msg[2]);
+          goto errout;
+        }
+
+      n = sscanf(pkt_dat.msg[2], "BSSID=%x:%x:%x:%x:%x:%x %s",
+                 &res->u.ap_addr.sa_data[0], &res->u.ap_addr.sa_data[1],
+                 &res->u.ap_addr.sa_data[2], &res->u.ap_addr.sa_data[3],
+                 &res->u.ap_addr.sa_data[4], &res->u.ap_addr.sa_data[5],
+                 cmd);
+      ASSERT(7 == n);
+      wlinfo("BSSID:%02X:%02X:%02X:%02X:%02X:%02X\n",
+             res->u.ap_addr.sa_data[0], res->u.ap_addr.sa_data[1],
+             res->u.ap_addr.sa_data[2], res->u.ap_addr.sa_data[3],
+             res->u.ap_addr.sa_data[4], res->u.ap_addr.sa_data[5]);
+    }
+  else if (msg->cmd == SIOCGIWFREQ)
+    {
+      if (strstr(pkt_dat.msg[2], "CHANNEL=") == NULL)
+        {
+          wlinfo("+++ error: pkt_dat.msg[2]=%s \n", pkt_dat.msg[2]);
+          goto errout;
+        }
+
+      n = sscanf(pkt_dat.msg[2], "%s CHANNEL=%d %s",
+                 cmd, &res->u.freq.m, cmd2);
+      ASSERT(3 == n);
+      wlinfo("CHANNEL:%d\n", res->u.freq.m);
+    }
+  else if (msg->cmd == SIOCGIWSENS)
+    {
+      if (strstr(pkt_dat.msg[3], "RSSI=") == NULL)
+        {
+          wlinfo("+++ error: pkt_dat.msg[3]=%s \n", pkt_dat.msg[3]);
+          goto errout;
+        }
+
+      n = sscanf(pkt_dat.msg[3], "RSSI=%d", &res->u.qual.level);
+      ASSERT(1 == n);
+      wlinfo("RSSI:%d\n", res->u.qual.level);
+    }
+
+errout:
+  _release_pkt_dat(dev, &pkt_dat);
+
+  if (n == 0)
+    {
+      return -EINVAL;
+    }
+
+  return OK;
+}
+
+/****************************************************************************
  * Name: gs2200m_ifreq_ifreq
  ****************************************************************************/
 
@@ -2698,6 +2863,12 @@ static int gs2200m_ioctl_ifreq(FAR struct gs2200m_dev_s *dev,
         memcpy(&dev->net_dev.d_netmask,
                &inaddr->sin_addr, sizeof(inaddr->sin_addr)
                );
+        break;
+
+      case SIOCGIWNWID:
+      case SIOCGIWFREQ:
+      case SIOCGIWSENS:
+        ret = gs2200m_ioctl_iwreq(dev, msg);
         break;
 
       default:
@@ -3008,6 +3179,30 @@ repeat:
   /* Receive a packet */
 
   t = gs2200m_recv_pkt(dev, pkt_dat);
+
+  if (true == dev->disassociate_flag)
+    {
+      /* Disassociate recovery */
+
+      wlwarn("=== receive DISASSOCIATE\n");
+      dev->valid_cid_bits = 0;
+
+      do
+        {
+          /* Discard incoming packets until timeout happens */
+
+          while (gs2200m_recv_pkt(dev, NULL) != TYPE_TIMEOUT)
+            {
+              nxsig_usleep(100 * 1000);
+            }
+        }
+      while (gs2200m_ioctl_assoc_sta(dev, &dev->reconnect_msg) != OK);
+
+      wlwarn("=== recover DISASSOCIATE\n");
+      dev->disassociate_flag = false;
+
+      goto errout;
+    }
 
   if (TYPE_ERROR == t || 'z' == pkt_dat->cid)
     {

@@ -1068,7 +1068,9 @@ static void spi_setmode(FAR struct spi_dev_s *dev, enum spi_mode_e mode)
         spi_modifycr(STM32_SPI_CR1_OFFSET, priv, setbits, clrbits);
         spi_modifycr(STM32_SPI_CR1_OFFSET, priv, SPI_CR1_SPE, 0);
 
-        /* Save the mode so that subsequent re-configurations will be faster */
+        /* Save the mode so that subsequent re-configurations will be
+         * faster.
+         */
 
         priv->mode = mode;
     }
@@ -1095,7 +1097,6 @@ static void spi_setbits(FAR struct spi_dev_s *dev, int nbits)
   FAR struct stm32_spidev_s *priv = (FAR struct stm32_spidev_s *)dev;
   uint16_t setbits;
   uint16_t clrbits;
-  int savbits = nbits;
 
   spiinfo("nbits=%d\n", nbits);
 
@@ -1157,9 +1158,11 @@ static void spi_setbits(FAR struct spi_dev_s *dev, int nbits)
       spi_modifycr(STM32_SPI_CR1_OFFSET, priv, SPI_CR1_SPE, 0);
 #endif
 
-      /* Save the selection so the subsequence re-configurations will be faster */
+      /* Save the selection so that subsequent re-configurations will be
+       * faster.
+       */
 
-      priv->nbits = savbits; /* nbits has been clobbered... save the signed value. */
+      priv->nbits = nbits;
     }
 }
 
@@ -1257,7 +1260,9 @@ static uint32_t spi_send(FAR struct spi_dev_s *dev, uint32_t wd)
   spi_writeword(priv, (uint16_t)(wd & 0xffff));
   ret = (uint32_t)spi_readword(priv);
 
-  /* Check and clear any error flags (Reading from the SR clears the error flags) */
+  /* Check and clear any error flags (Reading from the SR clears the error
+   * flags)
+   */
 
   regval = spi_getreg(priv, STM32_SPI_SR_OFFSET);
 
@@ -1619,7 +1624,9 @@ static int spi_pm_prepare(FAR struct pm_callback_s *cb, int domain,
 
       if (sval <= 0)
         {
-          /* Exclusive lock is held, do not allow entry to deeper PM states. */
+          /* Exclusive lock is held, do not allow entry to deeper PM
+           * states.
+           */
 
           return -EBUSY;
         }

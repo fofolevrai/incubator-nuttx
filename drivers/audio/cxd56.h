@@ -227,6 +227,18 @@
 #  define CONFIG_CXD56_AUDIO_NUM_BUFFERS  4
 #endif
 
+/* Queue helpers */
+
+#define dq_get(q)    (dq_remfirst(q))
+#define dq_put(q,n) (dq_addlast((dq_entry_t*)n,(q)))
+#define dq_put_back(q,n) (dq_addfirst((dq_entry_t*)n,(q)))
+#define dq_clear(q) \
+  do \
+    { \
+      dq_remlast(q); \
+    } \
+  while (!dq_empty(q))
+
 /****************************************************************************
  * Public Types
  ****************************************************************************/
@@ -272,8 +284,8 @@ struct cxd56_dev_s
   pthread_t               threadid;         /* ID of our thread */
   sem_t                   pendsem;          /* Protect pendq */
 
-  struct dq_queue_s       pendingq;         /* Queue of pending buffers to be sent */
-  struct dq_queue_s       runningq;         /* Queue of buffers being played */
+  struct dq_queue_s       up_pendq;         /* Pending buffers from app to process */
+  struct dq_queue_s       up_runq;          /* Buffers from app being played */
 
   uint16_t                samplerate;       /* Sample rate */
 #ifndef CONFIG_AUDIO_EXCLUDE_VOLUME

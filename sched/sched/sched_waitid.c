@@ -123,11 +123,16 @@ int nx_waitid(int idtype, id_t id, FAR siginfo_t *info, int options)
     }
 
   /* None of the options are supported except for WEXITED (which must be
-   * provided.  Currently SIGCHILD always reports CLD_EXITED so we cannot
+   * provided.  Currently SIGCHLD always reports CLD_EXITED so we cannot
    * distinguish any other events.
    */
 
-  if (options != WEXITED)
+  if ((options & WEXITED) == 0)
+    {
+      return -ENOSYS;
+    }
+
+  if ((options & ~(WEXITED | WNOHANG)) != 0)
     {
       return -ENOSYS;
     }
