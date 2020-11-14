@@ -14,7 +14,11 @@
             "type": "cortex-debug",
             "servertype": "openocd",
             "configFiles": [
-                "board/st_nucleo_f4.cfg"
+                "board/st_nucleo_f4.cfg",
+            ],
+            "openOCDLaunchCommands": [
+                "init",
+                "reset halt"
             ],
             "preRestartCommands": [
                 "target remote localhost:3333",
